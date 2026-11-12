@@ -59,6 +59,7 @@ export default class App extends Component {
     step: 0,
     f: emptyJob(),
     editId: null,
+    dateAuto: true,
     nfOpen: false,
     nfName: "",
     nfType: "num",
@@ -71,13 +72,16 @@ export default class App extends Component {
   };
   async componentDidMount() {
     this._focus = () => {
+      this.syncDate();
       if (this.state.phase === "app") this.reload(true);
     };
     window.addEventListener("focus", this._focus);
+    this._dateTimer = setInterval(() => this.syncDate(), 60000);
     await this.init();
   }
   componentWillUnmount() {
     window.removeEventListener("focus", this._focus);
+    clearInterval(this._dateTimer);
     this.unsub();
   }
   unsub() {
@@ -207,7 +211,15 @@ export default class App extends Component {
     } else sessionStorage.removeItem(SKEY);
     this.setState({ phase: "auth", db: null, pw: "" });
   }
+  // A new job's date follows today's date until the user picks one, even if the page stays open overnight.
+  syncDate() {
+    this.setState((st) => {
+      const today = ymd(new Date());
+      return st.dateAuto && !st.editId && st.f.date !== today ? { f: Object.assign({}, st.f, { date: today }) } : null;
+    });
+  }
   set(k, v) {
+    if (k === "date") this.setState({ dateAuto: false });
     this.setState((st) => {
       const f = Object.assign({}, st.f);
       if (k.startsWith("cf.")) f.cf = Object.assign({}, f.cf, { [k.slice(3)]: v });
@@ -223,7 +235,8 @@ export default class App extends Component {
       db = S.db;
     if (S.saving) return;
     const v = curVer(db),
-      N = normJob(S.f, v.config);
+      f = S.dateAuto && !S.editId ? Object.assign({}, S.f, { date: ymd(new Date()) }) : S.f,
+      N = normJob(f, v.config);
     if (N.errs.length) {
       this.setState({ step: 4 });
       return this.toast(N.errs[0], true);
@@ -244,7 +257,7 @@ export default class App extends Component {
       });
     this.setState({ saving: true });
     const ok = await this.run(() => this.store.upsertMove(m), S.editId ? "Módosítás elmentve" : "Munka elmentve");
-    this.setState(ok ? { saving: false, f: emptyJob(), editId: null, step: 0 } : { saving: false });
+    this.setState(ok ? { saving: false, f: emptyJob(), editId: null, step: 0, dateAuto: true } : { saving: false });
   }
   dl(blob, name) {
     const a = document.createElement("a");
@@ -680,7 +693,7 @@ export default class App extends Component {
             aOpts: [{ value: "", label: "–" }].concat(
               Array.from({ length: 10 }, (_, i) => ({ value: String(i + 1), label: String(i + 1) })),
             ),
-            bOpts: [].concat([0, 10, 20, 30, 40, 50, 60].map((v) => ({ value: String(v), label: String(v) }))),
+            bOpts: [].concat([0, 10, 20, 30, 40, 50].map((v) => ({ value: String(v), label: String(v) }))),
           }),
         ]
           .concat(f.pkg === "other" ? [inp("price", "Végösszeg (nettó) – egyedi csomag", "Ft", { big: true, wide: true })] : [])
@@ -711,7 +724,7 @@ export default class App extends Component {
       Object.assign(out, {
         formTitle: S.editId ? "Munka szerkesztése" : "Új munka rögzítése",
         editing: !!S.editId,
-        cancelEdit: () => this.setState({ f: emptyJob(), editId: null, step: 0 }),
+        cancelEdit: () => this.setState({ f: emptyJob(), editId: null, step: 0, dateAuto: true }),
         steps: STEPS.map(([l], i) => {
           const a = i === st,
             d = i < st;
@@ -900,7 +913,12 @@ export default class App extends Component {
             onEdit: () => {
               let [th, tm] = splitMin(t);
               if (!has(tm)) tm = "0";
-              if (num(tm) % 10 !== 0) tm = String(Math.min(60, Math.round(num(tm) / 10) * 10));
+              if (num(tm) % 10 !== 0) tm = String(Math.round(num(tm) / 10) * 10);
+              // The minute picker stops at 50: a rounded-up 60 becomes the next full hour.
+              if (num(tm) >= 60) {
+                if (num(th) < 10) [th, tm] = [String(num(th) + 1), "0"];
+                else tm = "50";
+              }
               const [_x, _y] = [0, 0],
                 [rh, rm] = splitMin(r);
               const e = Object.assign(emptyJob(), clone(j), { totH: th, totM: tm, trH: rh, trM: rm });
@@ -908,7 +926,7 @@ export default class App extends Component {
                 e.boxMin = j.boxes;
                 e.boxMax = j.boxes;
               }
-              this.setState({ f: e, editId: j.id, step: 0 });
+              this.setState({ f: e, editId: j.id, step: 0, dateAuto: false });
               try {
                 window.scrollTo(0, 0);
               } catch (x) {}
