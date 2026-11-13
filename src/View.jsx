@@ -335,7 +335,8 @@ export default function View({ v }) {
                     <div style={{ flex: "1 1 260px", display: "flex", flexDirection: "column", gap: "2px", minWidth: "0" }}>
                       <span style={{ fontSize: "16px", fontWeight: "800" }}>Tömeges feltöltés Excelből</span>
                       <span style={{ fontSize: "13px", color: "#5E6673", lineHeight: "1.45" }}>
-                        Több munka egyszerre: töltsd le a mintát (egy sor = egy cím, így több címes munka is megadható), majd töltsd fel kitöltve.
+                        Több munka egyszerre: töltsd le a mintát (egy sor = egy cím, így több címes munka is megadható), majd töltsd fel
+                        kitöltve.
                       </span>
                     </div>
                     <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
