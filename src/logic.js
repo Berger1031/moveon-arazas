@@ -44,6 +44,8 @@ export const defaultConfig = () => ({
   vat: 27,
   rules: {},
 });
+// One address of a job, in travel order. trH/trM is the journey from the previous address (unused on the first).
+export const emptyStop = () => ({ floor: "", lift: null, trH: "", trM: "" });
 export const emptyJob = () => ({
   source: "new",
   date: ymd(new Date()),
@@ -51,10 +53,7 @@ export const emptyJob = () => ({
   pkg: "",
   pkgOther: "",
   workers: "",
-  fromFloor: "",
-  fromLift: null,
-  toFloor: "",
-  toLift: null,
+  stops: [emptyStop(), emptyStop()],
   boxMin: "",
   boxMax: "",
   smallF: "",
@@ -63,8 +62,6 @@ export const emptyJob = () => ({
   heavyNote: "",
   extras: "",
   unusual: "",
-  trH: "",
-  trM: "",
   totH: "",
   totM: "0",
   price: "",
@@ -90,16 +87,36 @@ export const noLiftFloors = (fl, li) => {
   const l = liftAt(fl, li);
   return l === true ? 0 : l === false ? f : null;
 };
+// A job's addresses in travel order. Jobs saved before multi-address support only have the from/to pair.
+export const stopsOf = (j) =>
+  Array.isArray(j.stops) && j.stops.length >= 2
+    ? j.stops
+    : [
+        { floor: j.fromFloor, lift: j.fromLift },
+        { floor: j.toFloor, lift: j.toLift, travelMin: j.travelMin },
+      ];
+// Floors carried without a lift, summed over every address; unknown as soon as one address is unknown.
 export const floorsNoLift = (j) => {
-  const a = noLiftFloors(j.fromFloor, j.fromLift),
-    b = noLiftFloors(j.toFloor, j.toLift);
-  return a == null || b == null ? null : a + b;
+  let sum = 0;
+  for (const st of stopsOf(j)) {
+    const v = noLiftFloors(st.floor, st.lift);
+    if (v == null) return null;
+    sum += v;
+  }
+  return sum;
 };
-export const liftAny = (j) => {
-  const a = liftAt(j.fromFloor, j.fromLift),
-    b = liftAt(j.toFloor, j.toLift);
-  return a === true || b === true ? true : a === false && b === false ? false : null;
-};
+const anyOf = (vals) => (vals.some((v) => v === true) ? true : vals.every((v) => v === false) ? false : null);
+export const liftAny = (j) => anyOf(stopsOf(j).map((st) => liftAt(st.floor, st.lift)));
+// True when at least one address is upstairs without a lift.
+export const noLiftAny = (j) =>
+  anyOf(
+    stopsOf(j).map((st) => {
+      if (!has(st.floor)) return null;
+      if (num(st.floor) <= 0) return false;
+      const l = liftAt(st.floor, st.lift);
+      return l === false ? true : l === true ? false : null;
+    }),
+  );
 export const tri = (v) => (v === true ? true : v === false ? false : null);
 export const curVer = (db) => db.versions[db.versions.length - 1];
 export const activeFields = (db) => db.fields.filter((f) => !f.archived && f.type !== "text");
@@ -150,7 +167,7 @@ export const billOf = (j, c) => {
 export const learnMissing = (j) => {
   const m = [];
   if (!(totMin(j) > 0)) m.push("teljes eltelt idő");
-  if (trMin(j) == null) m.push("át-út ideje");
+  if (trMin(j) == null) m.push(stopsOf(j).length > 2 ? "minden át-út ideje" : "át-út ideje");
   return m;
 };
 export function normJob(f, c) {
@@ -161,11 +178,14 @@ export function normJob(f, c) {
     ["smallF", "Kis bútor"],
     ["largeF", "Nagy bútor"],
     ["heavy", "Nehéz tárgyak"],
-    ["fromFloor", "Indulási emelet"],
-    ["toFloor", "Érkezési emelet"],
     ["workers", "Rakodók száma"],
   ].forEach(([k, l]) => {
     if (has(f[k]) && !(Number.isInteger(num(f[k])) && num(f[k]) >= 0)) e.push(l + ": egész, nem negatív szám kell");
+  });
+  const src = stopsOf(f);
+  src.forEach((st, i) => {
+    if (has(st.floor) && !(Number.isInteger(num(st.floor)) && num(st.floor) >= 0))
+      e.push("Cím " + (i + 1) + " – emelet: egész, nem negatív szám kell");
   });
   if (has(f.boxMin) && has(f.boxMax) && num(f.boxMax) < num(f.boxMin)) e.push("A dobozok maximuma nem lehet kisebb a minimumnál");
   const hm = (h, m, l) => {
@@ -178,16 +198,29 @@ export function normJob(f, c) {
     e.push("Teljes eltelt idő: az óra 1 és 10 közötti egész szám legyen");
   if (has(f.totM) && ![0, 10, 20, 30, 40, 50, 60].includes(num(f.totM)))
     e.push("Teljes eltelt idő: a perc 0, 10, 20, 30, 40, 50 vagy 60 lehet");
-  const tot = !has(f.totH) ? null : num(f.totH) * 60 + num(f.totM),
-    tr = hm(f.trH, f.trM, "Át-út ideje");
+  const tot = !has(f.totH) ? null : num(f.totH) * 60 + num(f.totM);
+  const stops = src.map((st, i) => ({
+    floor: st.floor ?? "",
+    lift: tri(st.lift),
+    travelMin: i === 0 ? null : hm(st.trH, st.trM, src.length === 2 ? "Át-út ideje" : "Át-út (Cím " + i + " → Cím " + (i + 1) + ")"),
+  }));
+  // Total travel is only known when every journey between consecutive addresses is known.
+  const legs = stops.slice(1).map((st) => st.travelMin),
+    tr = legs.every((v) => v != null) ? legs.reduce((a, v) => a + v, 0) : null,
+    last = stops[stops.length - 1];
   if (tot != null && tr != null && tr > tot) e.push("Az át-út ideje nem lehet több a teljes eltelt időnél");
   const m = Object.assign({}, f, {
     source: "new",
     loc: "bp",
     totalMin: tot,
     travelMin: tr,
+    fromFloor: stops[0].floor,
+    fromLift: stops[0].lift,
+    toFloor: last.floor,
+    toLift: last.lift,
     hours: tot != null ? String(Math.round((tot / 60) * 1000) / 1000) : "",
     priceType: "netto",
+    stops,
   });
   if (!has(m.workers)) {
     const cw = crew(m, c);
@@ -210,17 +243,7 @@ export function timeDefs(fields, c) {
       kind: "bool",
       when: "ha nem volt lift",
       yes: "lift nélküli",
-      get: (j) => {
-        const s = (fl, li) => {
-          if (!has(fl)) return null;
-          if (num(fl) <= 0) return false;
-          const l = liftAt(fl, li);
-          return l === false ? true : l === true ? false : null;
-        };
-        const a = s(j.fromFloor, j.fromLift),
-          b = s(j.toFloor, j.toLift);
-        return a === true || b === true ? true : a === false && b === false ? false : null;
-      },
+      get: noLiftAny,
     },
     { key: "boxes", label: "Dobozok és zsákok (becsült)", unit: "doboz", per: 10, kind: "num", get: boxEst },
     { key: "smallF", label: "Kis bútor", unit: "db", per: 1, kind: "num", get: (j) => (has(j.smallF) ? num(j.smallF) : null) },
@@ -394,6 +417,9 @@ export function moveToRow(m) {
     large_furniture: nn(m.largeF),
     to_floor: nn(m.toFloor),
     to_lift: lb(m.toLift),
+    stops: Array.isArray(m.stops)
+      ? m.stops.map((st) => ({ floor: nn(st.floor), lift: lb(st.lift), travel_min: has(st.travelMin) ? num(st.travelMin) : null }))
+      : null,
     boxes: nn(m.boxes),
     furniture: nn(m.furniture),
     heavy: nn(m.heavy),
@@ -431,6 +457,10 @@ export function rowToMove(r) {
     largeF: s(r.large_furniture),
     toFloor: s(r.to_floor),
     toLift: lb(r.to_lift),
+    stops:
+      Array.isArray(r.stops) && r.stops.length >= 2
+        ? r.stops.map((st) => ({ floor: s(st.floor), lift: lb(st.lift), travelMin: st.travel_min ?? null }))
+        : null,
     boxes: s(r.boxes),
     furniture: s(r.furniture),
     heavy: s(r.heavy),
@@ -601,50 +631,149 @@ export const colL = (i) => {
   return s;
 };
 export const YN = ["Igen", "Nem", "Nincs adat"];
+// Excel template. One row = one address; a job is the rows sharing a "Munka sorszáma". The job-level
+// columns are filled once, in the row of the job's first address.
+const JOB_COLS = (c) => [
+  ["Munka dátuma (ÉÉÉÉ-HH-NN)", "date", 22, "date"],
+  ["Helyszín", "loc", 12, "loc", ["Budapest"]],
+  ["Csomag", "pkg", 20, "pkg", c.packages.map((p) => p.name)],
+  ["Rakodók száma", "workers", 14, "int"],
+];
+const QTY_COLS = [
+  ["Dobozok és zsákok – minimum (becslés)", "boxMin", 24, "int"],
+  ["Dobozok és zsákok – maximum (becslés)", "boxMax", 24, "int"],
+  ["Kis bútorok száma", "smallF", 16, "int"],
+  ["Nagy bútorok száma", "largeF", 16, "int"],
+  ["Nehéz, különleges tárgyak (db)", "heavy", 24, "int"],
+  ["Különleges tárgyak leírása", "heavyNote", 26, "text"],
+  ["Extra munka, szolgáltatás", "extras", 26, "text"],
+  ["Szokatlan körülmények", "unusual", 26, "text"],
+];
+const TOTAL_COLS = [
+  ["Teljes eltelt idő (óra)", "totH", 18, "int", ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]],
+  ["Teljes eltelt idő (perc)", "totM", 18, "int", ["0", "10", "20", "30", "40", "50", "60"]],
+  ["Megjegyzés", "note", 30, "text"],
+];
+const fieldCols = (fields) =>
+  fields.map((f) => [
+    f.name + (f.type === "num" && f.unit ? " (" + f.unit + ")" : ""),
+    "cf:" + f.id,
+    20,
+    f.type === "bool" ? "yn" : "num",
+    f.type === "bool" ? YN : null,
+  ]);
+const asCols = (cols) => cols.map(([h, key, w, t, list]) => ({ h, key, w, t, list }));
+// Keys that describe one address rather than the whole job.
+export const STOP_KEYS = ["seq", "floor", "lift", "trH", "trM"];
 export function templateCols(c, fields) {
-  const P = c.packages.map((p) => p.name);
-  const cols = [
-    ["Munka dátuma (ÉÉÉÉ-HH-NN)", "date", 22, "date"],
-    ["Helyszín", "loc", 12, "loc", ["Budapest"]],
-    ["Csomag", "pkg", 20, "pkg", P],
-    ["Rakodók száma", "workers", 14, "int"],
-    ["Indulási emelet", "fromFloor", 15, "int"],
-    ["Lift az indulási címen", "fromLift", 20, "yn", YN],
-    ["Érkezési emelet", "toFloor", 15, "int"],
-    ["Lift az érkezési címen", "toLift", 20, "yn", YN],
-    ["Dobozok és zsákok – minimum (becslés)", "boxMin", 24, "int"],
-    ["Dobozok és zsákok – maximum (becslés)", "boxMax", 24, "int"],
-    ["Kis bútorok száma", "smallF", 16, "int"],
-    ["Nagy bútorok száma", "largeF", 16, "int"],
-    ["Nehéz, különleges tárgyak (db)", "heavy", 24, "int"],
-    ["Különleges tárgyak leírása", "heavyNote", 26, "text"],
-    ["Extra munka, szolgáltatás", "extras", 26, "text"],
-    ["Szokatlan körülmények", "unusual", 26, "text"],
-    ["Át-út ideje (óra)", "trH", 14, "int"],
-    ["Át-út ideje (perc)", "trM", 14, "int"],
-    ["Teljes eltelt idő (óra)", "totH", 18, "int", ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]],
-    ["Teljes eltelt idő (perc)", "totM", 18, "int", ["0", "10", "20", "30", "40", "50", "60"]],
-    ["Megjegyzés", "note", 30, "text"],
-  ];
-  fields.forEach((f) =>
-    cols.push([
-      f.name + (f.type === "num" && f.unit ? " (" + f.unit + ")" : ""),
-      "cf:" + f.id,
-      20,
-      f.type === "bool" ? "yn" : "num",
-      f.type === "bool" ? YN : null,
-    ]),
+  return asCols(
+    [
+      ["Munka sorszáma", "job", 16, "int"],
+      ["Cím sorszáma", "seq", 14, "int"],
+      ["Emelet", "floor", 10, "int"],
+      ["Lift", "lift", 14, "yn", YN],
+      ["Át-út az előző címtől (óra)", "trH", 24, "int"],
+      ["Át-út az előző címtől (perc)", "trM", 24, "int"],
+    ]
+      .concat(JOB_COLS(c), QTY_COLS, TOTAL_COLS)
+      .concat(fieldCols(fields)),
   );
-  return cols.map(([h, key, w, t, list]) => ({ h, key, w, t, list }));
+}
+// The template used before multi-address support: one row per job, exactly two addresses.
+function legacyCols(c, fields) {
+  return asCols(
+    JOB_COLS(c)
+      .concat(
+        [
+          ["Indulási emelet", "fromFloor", 15, "int"],
+          ["Lift az indulási címen", "fromLift", 20, "yn", YN],
+          ["Érkezési emelet", "toFloor", 15, "int"],
+          ["Lift az érkezési címen", "toLift", 20, "yn", YN],
+        ],
+        QTY_COLS,
+        [
+          ["Át-út ideje (óra)", "trH", 14, "int"],
+          ["Át-út ideje (perc)", "trM", 14, "int"],
+        ],
+        TOTAL_COLS,
+      )
+      .concat(fieldCols(fields)),
+  );
 }
 export function hashStr(str) {
   let h = 5381;
   for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
   return (h >>> 0).toString(36) + str.length.toString(36);
 }
+// Reads one cell according to its column type; problems are appended to errs.
+function parseCell(col, raw, c, errs) {
+  const str = raw instanceof Date ? "" : String(raw ?? "").trim();
+  const n = nrm(str);
+  let val;
+  switch (col.t) {
+    case "date":
+      if (raw instanceof Date && !isNaN(raw)) val = ymd(new Date(raw.getTime() + 12 * 3600e3));
+      else if (typeof raw === "number" && window.XLSX) {
+        const d = XLSX.SSF.parse_date_code(raw);
+        val = d ? d.y + "-" + String(d.m).padStart(2, "0") + "-" + String(d.d).padStart(2, "0") : "";
+      } else if (!str) val = "";
+      else {
+        const x = str.match(/^(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
+        if (x) val = x[1] + "-" + x[2].padStart(2, "0") + "-" + x[3].padStart(2, "0");
+        else {
+          errs.push("Érvénytelen dátum: „" + str + "”");
+          val = "";
+        }
+      }
+      break;
+    case "loc":
+      val = "bp";
+      if (n && n !== "bp" && !n.startsWith("budapest")) errs.push("Jelenleg csak budapesti munka rögzíthető („" + str + "”)");
+      break;
+    case "pkg":
+      if (!n) val = "";
+      else {
+        const p = c.packages.find((p) => nrm(p.name) === n);
+        val = p ? p.id : (errs.push("Ismeretlen csomag: „" + str + "” – csak a négy Move-ON csomag választható"), "");
+      }
+      break;
+    case "yn":
+      val =
+        !n || ["nincsadat", "nemtudom", "ismeretlen", "na", "nincsinfo"].includes(n)
+          ? null
+          : ["igen", "i", "van", "yes", "1", "true", "x"].includes(n)
+            ? true
+            : ["nem", "n", "nincs", "no", "0", "false"].includes(n)
+              ? false
+              : (errs.push(col.h + ": „" + str + "” (Igen / Nem / Nincs adat)"), null);
+      break;
+    case "num":
+    case "int":
+      if (typeof raw === "number") val = raw < 0 ? (errs.push(col.h + ": negatív szám"), "") : String(raw);
+      else if (!str) val = "";
+      else {
+        const t = str.replace(/\s|ft|db|perc|ora|óra/gi, "").replace(",", ".");
+        if (/^\d+(\.\d+)?$/.test(t)) val = String(parseFloat(t));
+        else {
+          errs.push(col.h + ": „" + str + "” nem szám");
+          val = "";
+        }
+      }
+      if (col.t === "int" && val !== "" && !Number.isInteger(num(val))) {
+        errs.push(col.h + ": egész szám kell");
+        val = "";
+      }
+      break;
+    default:
+      val = str;
+  }
+  return val;
+}
+const filled = (v) => v != null && v !== "";
 export function parseRows(aoa, c, fields) {
-  const cols = templateCols(c, fields),
-    hdr = (aoa[0] || []).map(nrm),
+  const hdr = (aoa[0] || []).map(nrm),
+    multi = hdr.includes(nrm("Munka sorszáma")) || hdr.includes(nrm("Cím sorszáma")),
+    cols = multi ? templateCols(c, fields) : legacyCols(c, fields),
     map = {};
   hdr.forEach((h, i) => {
     if (!h) return;
@@ -658,82 +787,23 @@ export function parseRows(aoa, c, fields) {
   });
   if (map.totH == null && map.pkg == null && map.date == null)
     return { error: "Nem találtam a minta oszlopait. Kérjük, az új Excel-mintát használd." };
-  const out = [];
+  // Every non-empty sheet row, cell by cell.
+  const recs = [];
   for (let r = 1; r < aoa.length; r++) {
     const row = aoa[r] || [];
     if (!row.some((v) => String(v ?? "").trim() !== "")) continue;
     const errs = [],
-      f = emptyJob(),
+      v = {},
       cf = {};
-    f.date = "";
     cols.forEach((col) => {
-      const idx = map[col.key];
-      const raw = idx == null ? "" : row[idx];
-      const str = raw instanceof Date ? "" : String(raw ?? "").trim();
-      const n = nrm(str);
-      let val;
-      switch (col.t) {
-        case "date":
-          if (raw instanceof Date && !isNaN(raw)) val = ymd(new Date(raw.getTime() + 12 * 3600e3));
-          else if (typeof raw === "number" && window.XLSX) {
-            const d = XLSX.SSF.parse_date_code(raw);
-            val = d ? d.y + "-" + String(d.m).padStart(2, "0") + "-" + String(d.d).padStart(2, "0") : "";
-          } else if (!str) val = "";
-          else {
-            const x = str.match(/^(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
-            if (x) val = x[1] + "-" + x[2].padStart(2, "0") + "-" + x[3].padStart(2, "0");
-            else {
-              errs.push("Érvénytelen dátum: „" + str + "”");
-              val = "";
-            }
-          }
-          break;
-        case "loc":
-          val = "bp";
-          if (n && n !== "bp" && !n.startsWith("budapest")) errs.push("Jelenleg csak budapesti munka rögzíthető („" + str + "”)");
-          break;
-        case "pkg":
-          if (!n) val = "";
-          else {
-            const p = c.packages.find((p) => nrm(p.name) === n);
-            val = p ? p.id : (errs.push("Ismeretlen csomag: „" + str + "” – csak a négy Move-ON csomag választható"), "");
-          }
-          break;
-        case "yn":
-          val =
-            !n || ["nincsadat", "nemtudom", "ismeretlen", "na", "nincsinfo"].includes(n)
-              ? null
-              : ["igen", "i", "van", "yes", "1", "true", "x"].includes(n)
-                ? true
-                : ["nem", "n", "nincs", "no", "0", "false"].includes(n)
-                  ? false
-                  : (errs.push(col.h + ": „" + str + "” (Igen / Nem / Nincs adat)"), null);
-          break;
-        case "num":
-        case "int":
-          if (typeof raw === "number") val = raw < 0 ? (errs.push(col.h + ": negatív szám"), "") : String(raw);
-          else if (!str) val = "";
-          else {
-            const t = str.replace(/\s|ft|db|perc|ora|óra/gi, "").replace(",", ".");
-            if (/^\d+(\.\d+)?$/.test(t)) val = String(parseFloat(t));
-            else {
-              errs.push(col.h + ": „" + str + "” nem szám");
-              val = "";
-            }
-          }
-          if (col.t === "int" && val !== "" && !Number.isInteger(num(val))) {
-            errs.push(col.h + ": egész szám kell");
-            val = "";
-          }
-          break;
-        default:
-          val = str;
-      }
+      const val = parseCell(col, map[col.key] == null ? "" : row[map[col.key]], c, errs);
       if (col.key.startsWith("cf:")) {
         if (col.t === "yn" ? val != null : val !== "") cf[col.key.slice(3)] = val;
-      } else f[col.key] = val;
+      } else v[col.key] = val;
     });
-    f.cf = cf;
+    recs.push({ row: r + 1, v, cf, errs });
+  }
+  const finish = (f, row, errs, sigDrop) => {
     const N = normJob(f, c);
     N.errs.forEach((x) => {
       if (!errs.includes(x)) errs.push(x);
@@ -741,8 +811,82 @@ export function parseRows(aoa, c, fields) {
     const m = Object.assign({}, N.m, { id: newId() });
     const sig = Object.assign({}, m);
     delete sig.id;
+    sigDrop.forEach((k) => delete sig[k]);
     m.legacyId = "xls:" + hashStr(JSON.stringify(sig));
-    out.push({ row: r + 1, m, errs });
-  }
+    return { row, m, errs };
+  };
+  if (!multi)
+    return {
+      rows: recs.map(({ row, v, cf, errs }) => {
+        // Field order and fingerprint match the old importer, so a re-uploaded old file is still recognised as a duplicate.
+        const f = Object.assign(
+          {
+            source: "new",
+            date: "",
+            loc: "bp",
+            pkg: "",
+            pkgOther: "",
+            workers: "",
+            fromFloor: "",
+            fromLift: null,
+            toFloor: "",
+            toLift: null,
+          },
+          { boxMin: "", boxMax: "", smallF: "", largeF: "", heavy: "", heavyNote: "", extras: "", unusual: "", trH: "", trM: "" },
+          { totH: "", totM: "0", price: "", cf: {}, note: "" },
+          v,
+          { cf },
+        );
+        f.stops = [
+          { floor: f.fromFloor, lift: f.fromLift, trH: "", trM: "" },
+          { floor: f.toFloor, lift: f.toLift, trH: f.trH, trM: f.trM },
+        ];
+        return finish(f, row, errs, ["stops"]);
+      }),
+    };
+  // New template: group the address rows into jobs, in order of first appearance.
+  const groups = new Map();
+  recs.forEach((rec) => {
+    const key = filled(rec.v.job) ? rec.v.job : "row:" + rec.row;
+    if (!filled(rec.v.job)) rec.errs.push("Hiányzik a munka sorszáma");
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(rec);
+  });
+  const out = [];
+  groups.forEach((list) => {
+    const errs = [],
+      row = list[0].row;
+    const withSeq = list.filter((x) => filled(x.v.seq)).length;
+    if (withSeq === list.length) {
+      list.sort((a, b) => num(a.v.seq) - num(b.v.seq));
+      if (!list.every((x, i) => num(x.v.seq) === i + 1)) errs.push("A címek sorszáma 1-től kezdődjön és egyesével növekedjen (1, 2, 3…)");
+    } else if (withSeq > 0) errs.push("A cím sorszáma a munka minden soránál legyen kitöltve, vagy egyiknél se");
+    list.forEach((x) =>
+      x.errs.forEach((t) => {
+        if (!errs.includes(t)) errs.push(t);
+      }),
+    );
+    const f = emptyJob(),
+      cf = {};
+    f.date = "";
+    cols.forEach((col) => {
+      if (col.key === "job" || STOP_KEYS.includes(col.key) || col.key.startsWith("cf:")) return;
+      const hit = list.find((x) => filled(x.v[col.key]));
+      if (hit) f[col.key] = hit.v[col.key];
+    });
+    list
+      .slice()
+      .reverse()
+      .forEach((x) => Object.assign(cf, x.cf));
+    f.cf = cf;
+    f.stops = list.map((x) => ({ floor: x.v.floor, lift: x.v.lift, trH: x.v.trH, trM: x.v.trM }));
+    if (filled(f.stops[0].trH) || filled(f.stops[0].trM)) {
+      errs.push("Az 1. címnél nem lehet át-út: az át-út mindig az előző címtől számít");
+      f.stops[0].trH = f.stops[0].trM = "";
+    }
+    // A job given on a single row still has a second address; its details are simply unknown.
+    if (f.stops.length < 2) f.stops.push(emptyStop());
+    out.push(finish(f, row, errs, []));
+  });
   return { rows: out };
 }

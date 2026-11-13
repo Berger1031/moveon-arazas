@@ -80,3 +80,8 @@ create policy "authenticated full access" on public.moves for all to authenticat
 
 -- Live sync between open browsers.
 alter publication supabase_realtime add table public.moves, public.custom_fields, public.pricing_versions;
+
+-- Ordered list of a job's addresses: [{"floor": 3, "lift": false, "travel_min": null}, ...].
+-- travel_min is the journey from the previous address (null for the first). The from_*/to_* columns
+-- mirror the first and last address, and moves.travel_min holds the sum of all journeys.
+alter table public.moves add column if not exists stops jsonb;

@@ -335,7 +335,7 @@ export default function View({ v }) {
                     <div style={{ flex: "1 1 260px", display: "flex", flexDirection: "column", gap: "2px", minWidth: "0" }}>
                       <span style={{ fontSize: "16px", fontWeight: "800" }}>Tömeges feltöltés Excelből</span>
                       <span style={{ fontSize: "13px", color: "#5E6673", lineHeight: "1.45" }}>
-                        Több munka egyszerre: töltsd le a mintát, egy sor = egy költözés, majd töltsd fel kitöltve.
+                        Több munka egyszerre: töltsd le a mintát (egy sor = egy cím, így több címes munka is megadható), majd töltsd fel kitöltve.
                       </span>
                     </div>
                     <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
@@ -624,7 +624,7 @@ export default function View({ v }) {
                                   <>
                                     <button
                                       onClick={f.onRemove}
-                                      aria-label="Tényező eltávolítása"
+                                      aria-label={f.removeLabel}
                                       style={{
                                         background: "none",
                                         border: "none",
@@ -877,6 +877,25 @@ export default function View({ v }) {
                                   </div>
                                 </>
                               )}
+                              {f.isTotal && (
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    justifyContent: "space-between",
+                                    alignItems: "center",
+                                    gap: "12px",
+                                    maxWidth: "440px",
+                                    minHeight: "46px",
+                                    padding: "0 14px",
+                                    borderRadius: "10px",
+                                    background: "#F7F6F3",
+                                    fontSize: "15px",
+                                  }}
+                                >
+                                  <span style={{ color: "#3B4350", fontWeight: "600" }}>Összesen</span>
+                                  <span style={{ fontSize: "17px", fontWeight: "800", color: f.totalColor }}>{f.totalValue}</span>
+                                </div>
+                              )}
                               {f.isArea && (
                                 <>
                                   <textarea
@@ -910,6 +929,30 @@ export default function View({ v }) {
                           </Fragment>
                         ))}
                       </div>
+                      {v.isStep3 && (
+                        <button
+                          className="fx-hover-tint"
+                          onClick={v.addStop}
+                          style={{
+                            alignSelf: "flex-start",
+                            height: "44px",
+                            padding: "0 14px",
+                            borderRadius: "10px",
+                            border: "1px solid #5bc1e7",
+                            background: "#F2FAFD",
+                            color: "#0F2733",
+                            fontSize: "14px",
+                            fontWeight: "800",
+                            cursor: "pointer",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "8px",
+                          }}
+                        >
+                          <i className="icon-plus" style={{ fontSize: "16px" }} />
+                          Új cím hozzáadása
+                        </button>
+                      )}
                       {v.isStep4 && (
                         <>
                           <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>

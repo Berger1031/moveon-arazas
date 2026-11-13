@@ -17,6 +17,9 @@ import {
   ymd,
   LOC,
   emptyJob,
+  emptyStop,
+  stopsOf,
+  STOP_KEYS,
   seg,
   floorsNoLift,
   tri,
@@ -223,8 +226,24 @@ export default class App extends Component {
     this.setState((st) => {
       const f = Object.assign({}, st.f);
       if (k.startsWith("cf.")) f.cf = Object.assign({}, f.cf, { [k.slice(3)]: v });
-      else f[k] = v;
+      else if (k.startsWith("stop.")) {
+        const [, i, key] = k.split(".");
+        f.stops = f.stops.map((x, n) => (n === +i ? Object.assign({}, x, { [key]: v }) : x));
+      } else f[k] = v;
       return { f };
+    });
+  }
+  addStop() {
+    this.setState((st) => ({ f: Object.assign({}, st.f, { stops: st.f.stops.concat([emptyStop()]) }) }));
+  }
+  // Removing an address also drops the journey into it. The journey into the next address would now start
+  // from a different place, so it is cleared rather than kept with a stale value.
+  removeStop(i) {
+    this.setState((st) => {
+      if (st.f.stops.length <= 2) return null;
+      const stops = st.f.stops.filter((_, n) => n !== i);
+      if (stops[i]) stops[i] = Object.assign({}, stops[i], { trH: "", trM: "" });
+      return { f: Object.assign({}, st.f, { stops }) };
     });
   }
   goStep(i) {
@@ -282,19 +301,34 @@ export default class App extends Component {
       const g = X.utils.aoa_to_sheet([
         ["Move-ON – munkák tömeges feltöltése"],
         [""],
-        ["1. A „Munkák” lapon egy sor = egy költözés. Az első sort (oszlopnevek) ne módosítsd."],
-        ["2. Csak budapesti, befejezett munkák. A legfontosabb: Csomag, Teljes eltelt idő (óra + perc) és Át-út ideje (óra + perc)."],
         [
-          "3. A teljes eltelt idő a kezdéstől a befejezésig tart, az át-úttal együtt. A végösszeget ebből számolja a rendszer: kiállási díj + teljes idő × óradíj (nettó).",
+          "1. A „Munkák” lapon egy sor = egy cím. Egy költözés annyi sorból áll, ahány címe volt (legalább kettő). Az első sort (oszlopnevek) ne módosítsd.",
         ],
         [
-          "4. Dobozok és zsákok: a minimum és a maximum BECSLÉS, nem pontos darabszám. Ha pontosan tudod, írd mindkettőbe ugyanazt; ha nem tudod, hagyd üresen.",
+          "2. Az egy költözéshez tartozó sorokba ugyanazt a „Munka sorszáma” értéket írd (1, 2, 3…). A „Cím sorszáma” a címek tényleges sorrendje: 1, 2, 3… Bármennyi cím megadható.",
         ],
         [
-          "5. Emelet: 0 = földszint. Lift: Igen / Nem / Nincs adat. Az üres cella „nincs adat”, nem nulla és nem „Nem”. Számoknál egész számot írj. A dátum formája: 2026-10-05. A végösszeget a rendszer számolja, percre arányosan.",
+          "3. Minden címnek saját Emelet és Lift adata van. Az „Át-út az előző címtől” az előző címtől idáig tartó út ideje; az 1. címnél hagyd üresen. Az át-utak összegét a rendszer számolja.",
         ],
-        ["6. Mentsd el, majd az alkalmazásban: „Kitöltött Excel feltöltése”. Feltöltés előtt ellenőrizheted az adatokat."],
-        ["7. Ugyanazt a sort kétszer nem tölti fel a rendszer."],
+        [
+          "4. A munka többi adatát (dátum, csomag, dobozok, bútorok, teljes eltelt idő stb.) csak egyszer, a munka 1. címének sorába írd. A legfontosabb: Csomag, Teljes eltelt idő (óra + perc) és minden át-út ideje.",
+        ],
+        [
+          "5. A teljes eltelt idő a kezdéstől a befejezésig tart, az összes át-úttal együtt. A végösszeget ebből számolja a rendszer: kiállási díj + teljes idő × óradíj (nettó). Az elemzés a teljes időből levonja az át-utak összegét.",
+        ],
+        [
+          "6. Dobozok és zsákok: a minimum és a maximum BECSLÉS, nem pontos darabszám. Ha pontosan tudod, írd mindkettőbe ugyanazt; ha nem tudod, hagyd üresen.",
+        ],
+        [
+          "7. Emelet: 0 = földszint. Lift: Igen / Nem / Nincs adat. Az üres cella „nincs adat”, nem nulla és nem „Nem”. Számoknál egész számot írj. A dátum formája: 2026-10-05.",
+        ],
+        [
+          "8. Példa – három címes munka: 1. sor: Munka 1, Cím 1; 2. sor: Munka 1, Cím 2, át-út 0 óra 30 perc; 3. sor: Munka 1, Cím 3, át-út 0 óra 30 perc.",
+        ],
+        ["9. Mentsd el, majd az alkalmazásban: „Kitöltött Excel feltöltése”. Feltöltés előtt ellenőrizheted az adatokat."],
+        [
+          "10. Ugyanazt a munkát kétszer nem tölti fel a rendszer. A korábbi (egy sor = egy költözés) minta szerint kitöltött fájlok is feltölthetők.",
+        ],
       ]);
       g["!cols"] = [{ wch: 110 }];
       X.utils.book_append_sheet(wb, g, "Útmutató");
@@ -349,40 +383,44 @@ export default class App extends Component {
       c = curVer(db).config,
       cols = templateCols(c, activeFields(db));
     const yn = (v) => (v === true ? "Igen" : v === false ? "Nem" : "");
-    const rows = db.moves.map((m) => {
+    const rows = db.moves.flatMap((m, n) => {
       const [th, tm] = splitMin(totMin(m)),
-        [rh, rm] = splitMin(trMin(m)),
         X = Object.assign({}, m, {
           totH: th,
           totM: tm,
-          trH: rh,
-          trM: rm,
           boxMin: has(m.boxMin) ? m.boxMin : m.boxes || "",
           boxMax: has(m.boxMax) ? m.boxMax : m.boxes || "",
           price: m.pkg === "other" ? m.price : "",
         });
-      return cols.map((col) => {
-        const k = col.key;
-        if (k.startsWith("cf:")) {
-          const v = (m.cf || {})[k.slice(3)];
-          return col.t === "yn" ? yn(v) : has(v) ? num(v) : "";
-        }
-        const v = X[k];
-        switch (col.t) {
-          case "loc":
-            return "Budapest";
-          case "pkg": {
-            const p = c.packages.find((p) => p.id === v);
-            return p ? p.name : v === "other" ? "Egyéb / egyedi" : "";
+      // One sheet row per address; the job-level columns go in the first address's row.
+      return stopsOf(m).map((st, i) => {
+        const [rh, rm] = i === 0 ? ["", ""] : splitMin(st.travelMin),
+          A = { job: n + 1, seq: i + 1, floor: st.floor, lift: tri(st.lift), trH: rh, trM: rm };
+        return cols.map((col) => {
+          const k = col.key,
+            own = k === "job" || STOP_KEYS.includes(k);
+          if (!own && i > 0) return "";
+          if (k.startsWith("cf:")) {
+            const v = (m.cf || {})[k.slice(3)];
+            return col.t === "yn" ? yn(v) : has(v) ? num(v) : "";
           }
-          case "yn":
-            return yn(v);
-          case "num":
-          case "int":
-            return has(v) ? num(v) : "";
-          default:
-            return v || "";
-        }
+          const v = own ? A[k] : X[k];
+          switch (col.t) {
+            case "loc":
+              return "Budapest";
+            case "pkg": {
+              const p = c.packages.find((p) => p.id === v);
+              return p ? p.name : v === "other" ? "Egyéb / egyedi" : "";
+            }
+            case "yn":
+              return yn(v);
+            case "num":
+            case "int":
+              return has(v) ? num(v) : "";
+            default:
+              return v || "";
+          }
+        });
       });
     });
     try {
@@ -519,7 +557,7 @@ export default class App extends Component {
         hasImpErrors: bad.length > 0,
         impErrors: bad.map((r) => ({ row: r.row + ". sor", reasons: r.errs.join("; ") })),
         impNote:
-          "A hiányos munkák is feltölthetők – az időelemzésbe akkor kerülnek be, ha megvan a teljes eltelt idő és az át-út ideje. A hibás sorokat javítsd az Excelben, és töltsd fel újra; a már feltöltött sorok nem duplázódnak.",
+          "A hiányos munkák is feltölthetők – az időelemzésbe akkor kerülnek be, ha megvan a teljes eltelt idő és minden át-út ideje. A hibás sorokat javítsd az Excelben, és töltsd fel újra; a már feltöltött sorok nem duplázódnak.",
         impBtn: S.impBusy ? "Importálás…" : good.length ? good.length + " munka importálása" : "Nincs importálható sor",
         impBtnBg: good.length ? "#5bc1e7" : "#E6E4DF",
         doImport: () => this.doImport(),
@@ -528,7 +566,11 @@ export default class App extends Component {
     }
 
     if (pg === "jobs") {
-      const get = (k) => (k.startsWith("cf.") ? (f.cf || {})[k.slice(3)] : f[k]);
+      const get = (k) => {
+        if (k.startsWith("cf.")) return (f.cf || {})[k.slice(3)];
+        if (k.startsWith("stop.")) return (f.stops[+k.split(".")[1]] || {})[k.split(".")[2]];
+        return f[k];
+      };
       const B = {
         isInput: false,
         isSeg: false,
@@ -543,6 +585,10 @@ export default class App extends Component {
         hintWeight: "400",
         span: "auto",
         removable: false,
+        removeLabel: "Tényező eltávolítása",
+        isTotal: false,
+        totalValue: "",
+        totalColor: "#18212F",
         options: [],
         h: "46px",
         fs: "15px",
@@ -634,10 +680,16 @@ export default class App extends Component {
       );
       const pkg = c.packages.find((p) => p.id === f.pkg),
         boxErr = has(f.boxMin) && has(f.boxMax) && num(f.boxMax) < num(f.boxMin);
+      const stops = f.stops,
+        multi = stops.length > 2,
+        trTotal = normJob(f, c).m.travelMin;
       const STEPS = [
         ["Alapadatok", "Dátum – minden rögzített munka budapesti, befejezett munka."],
         ["Csomag és munka", "A csomag óradíja egyben a kiállási díj is (0. óra)."],
-        ["Indulás és érkezés", "Emeletek és lift a két címen. Amit nem tudtok, hagyjátok „Nincs adat”-on – nem számít „nincs”-nek."],
+        [
+          "Indulás és érkezés",
+          "Emelet és lift címenként, az útvonal sorrendjében. Amit nem tudtok, hagyjátok „Nincs adat”-on – nem számít „nincs”-nek.",
+        ],
         ["Mennyiség és egyéb", "Amennyit tudtok – az üres mező „nincs adat”, nem nulla."],
         ["Végösszeg és ellenőrzés", "A teljes eltelt időből számoljuk a végösszeget, az át-út nélküli időből tanul az elemzés."],
       ];
@@ -649,12 +701,15 @@ export default class App extends Component {
             hint: pkg ? "A csomagban: " + pkg.movers + " rakodó" : "Ha eltért a csomagtól",
           }),
         ],
-        [
-          inp("fromFloor", "Indulás – emelet", "em.", { step: "1", ph: "Nincs adat", hint: "0 = földszint" }),
-          sg("Indulás – lift", lift, tri(f.fromLift), (v) => this.set("fromLift", v)),
-          inp("toFloor", "Érkezés – emelet", "em.", { step: "1", ph: "Nincs adat", hint: "0 = földszint" }),
-          sg("Érkezés – lift", lift, tri(f.toLift), (v) => this.set("toLift", v)),
-        ],
+        stops.flatMap((x, i) => [
+          Object.assign(
+            inp("stop." + i + ".floor", "Cím " + (i + 1) + " – emelet", "em.", { step: "1", ph: "Nincs adat", hint: "0 = földszint" }),
+            stops.length > 2
+              ? { removable: true, removeLabel: "Cím " + (i + 1) + " eltávolítása", onRemove: () => this.removeStop(i) }
+              : {},
+          ),
+          sg("Cím " + (i + 1) + " – lift", lift, tri(x.lift), (v) => this.set("stop." + i + ".lift", v)),
+        ]),
         [
           dual("Dobozok és zsákok becsült száma", "boxMin", "boxMax", {
             aPh: "Minimum",
@@ -671,21 +726,51 @@ export default class App extends Component {
           inp("largeF", "Nagy bútor", "db", { step: "1", ph: "Nincs adat" }),
           inp("heavy", "Nehéz, különleges tárgyak", "db", { step: "1", ph: "Nincs adat" }),
           inp("heavyNote", "Melyek ezek?", "", { type: "text", ph: "pl. zongora, széf" }),
-          dual("Át-út ideje", "trH", "trM", {
-            aPh: "0",
-            bPh: "0",
-            aSuf: "óra",
-            bSuf: "perc",
-            hint: "Az indulási címtől az érkezési címig. Az ügyfél kifizeti, de az elemzés nem számítja munkavégzésnek.",
-          }),
-          inp("extras", "Extra munka, szolgáltatás", "", {
-            type: "text",
-            wide: true,
-            ph: "pl. bútorszerelés, csomagolás",
-            hint: "Csak tájékoztató megjegyzés – nem számít bele sem a végösszegbe, sem az időelemzésbe.",
-          }),
-          area("unusual", "Szokatlan körülmények", "pl. szűk lépcsőház, messze kellett parkolni"),
-        ].concat(custom),
+        ]
+          .concat(
+            stops.slice(1).map((_, n) =>
+              dual(
+                multi ? "Át-út: Cím " + (n + 1) + " → Cím " + (n + 2) : "Át-út ideje",
+                "stop." + (n + 1) + ".trH",
+                "stop." + (n + 1) + ".trM",
+                {
+                  aPh: "0",
+                  bPh: "0",
+                  aSuf: "óra",
+                  bSuf: "perc",
+                  hint: multi ? "" : "Az indulási címtől az érkezési címig. Az ügyfél kifizeti, de az elemzés nem számítja munkavégzésnek.",
+                },
+              ),
+            ),
+          )
+          .concat(
+            multi
+              ? [
+                  Object.assign({}, B, {
+                    label: "Összes át-út",
+                    isTotal: true,
+                    totalValue: trTotal != null ? fmin(trTotal) : "Nincs adat",
+                    totalColor: trTotal != null ? "#18212F" : "#9AA0A8",
+                    span: "1 / -1",
+                    hasHint: true,
+                    hint:
+                      "Az egyes át-utak összege" +
+                      (trTotal != null ? "" : " – akkor számolható, ha minden át-út ki van töltve") +
+                      ". Az ügyfél kifizeti, de az elemzés nem számítja munkavégzésnek.",
+                  }),
+                ]
+              : [],
+          )
+          .concat([
+            inp("extras", "Extra munka, szolgáltatás", "", {
+              type: "text",
+              wide: true,
+              ph: "pl. bútorszerelés, csomagolás",
+              hint: "Csak tájékoztató megjegyzés – nem számít bele sem a végösszegbe, sem az időelemzésbe.",
+            }),
+            area("unusual", "Szokatlan körülmények", "pl. szűk lépcsőház, messze kellett parkolni"),
+          ])
+          .concat(custom),
         [
           Object.assign(dual("Teljes eltelt idő – kezdéstől befejezésig", "totH", "totM", { hint: "Az át-út idejét is tartalmazza." }), {
             isDual: false,
@@ -749,6 +834,8 @@ export default class App extends Component {
         stepCount: st + 1 + " / 5",
         isStep1: st === 0,
         isStep2: st === 1,
+        isStep3: st === 2,
+        addStop: () => this.addStop(),
         isStep4: st === 3,
         isStep5: st === 4,
         pkgCards: c.packages
@@ -807,7 +894,7 @@ export default class App extends Component {
           cr("Kiállási díj", bl ? ft(bl.callout) : dash),
           cr("Óradíj", bl ? ft(bl.rate) + " / óra" : dash),
           cr("Teljes számlázott idő", tot != null ? fmin(tot) : dash),
-          cr("Ebből át-út", tr != null ? fmin(tr) : dash),
+          cr(multi ? "Ebből át-út (összesen)" : "Ebből át-út", tr != null ? fmin(tr) : dash),
           cr("Tényleges munkavégzési idő (elemzéshez)", wk != null ? fmin(wk) : dash, true),
         ],
         calcTotal: bl ? ft(bl.total) : "–",
@@ -837,10 +924,7 @@ export default class App extends Component {
           {
             title: "Indulás és érkezés",
             onEdit: () => this.goStep(2),
-            items: [
-              it("Indulás", has(f.fromFloor) || f.fromLift != null ? ln(f.fromFloor, f.fromLift) : dash),
-              it("Érkezés", has(f.toFloor) || f.toLift != null ? ln(f.toFloor, f.toLift) : dash),
-            ],
+            items: stops.map((x, i) => it("Cím " + (i + 1), has(x.floor) || x.lift != null ? ln(x.floor, x.lift) : dash)),
           },
           {
             title: "Mennyiség és egyéb",
@@ -853,15 +937,22 @@ export default class App extends Component {
                 "Nehéz tárgyak",
                 has(f.heavy) ? fq(num(f.heavy)) + " db" + (f.heavyNote ? " (" + f.heavyNote + ")" : "") : f.heavyNote || dash,
               ),
-              it("Át-út ideje", tr != null ? fmin(tr) : dash),
-              it("Extra munka", f.extras || dash),
-              it("Szokatlan körülmények", f.unusual || dash),
-            ].concat(
-              fields.map((cf) => {
-                const v = (f.cf || {})[cf.id];
-                return it(cf.name, cf.type === "bool" ? (v === true ? "Igen" : v === false ? "Nem" : dash) : val(v, cf.unit));
-              }),
-            ),
+            ]
+              .concat(
+                multi
+                  ? N.m.stops
+                      .slice(1)
+                      .map((x, n) => it("Át-út: Cím " + (n + 1) + " → Cím " + (n + 2), x.travelMin != null ? fmin(x.travelMin) : dash))
+                      .concat([it("Összes át-út", tr != null ? fmin(tr) : dash)])
+                  : [it("Át-út ideje", tr != null ? fmin(tr) : dash)],
+              )
+              .concat([it("Extra munka", f.extras || dash), it("Szokatlan körülmények", f.unusual || dash)])
+              .concat(
+                fields.map((cf) => {
+                  const v = (f.cf || {})[cf.id];
+                  return it(cf.name, cf.type === "bool" ? (v === true ? "Igen" : v === false ? "Nem" : dash) : val(v, cf.unit));
+                }),
+              ),
           },
         ],
         back: () => this.setState({ step: Math.max(0, st - 1) }),
@@ -893,6 +984,7 @@ export default class App extends Component {
             sub:
               [
                 crew(j, c) != null ? crew(j, c) + " rakodó" : "",
+                stopsOf(j).length > 2 ? stopsOf(j).length + " cím" : "",
                 t != null ? fmin(t) + " összesen" : "",
                 r != null ? "át-út " + fmin(r) : "",
                 w != null ? "munka " + fmin(w) : "",
@@ -919,9 +1011,14 @@ export default class App extends Component {
                 if (num(th) < 10) [th, tm] = [String(num(th) + 1), "0"];
                 else tm = "50";
               }
-              const [_x, _y] = [0, 0],
-                [rh, rm] = splitMin(r);
-              const e = Object.assign(emptyJob(), clone(j), { totH: th, totM: tm, trH: rh, trM: rm });
+              const e = Object.assign(emptyJob(), clone(j), {
+                totH: th,
+                totM: tm,
+                stops: stopsOf(j).map((x, i) => {
+                  const [rh, rm] = i === 0 ? ["", ""] : splitMin(x.travelMin);
+                  return { floor: x.floor ?? "", lift: tri(x.lift), trH: rh, trM: rm };
+                }),
+              });
               if (!has(e.boxMin) && !has(e.boxMax) && has(j.boxes)) {
                 e.boxMin = j.boxes;
                 e.boxMax = j.boxes;
