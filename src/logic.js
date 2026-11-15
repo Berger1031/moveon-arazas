@@ -45,7 +45,31 @@ export const defaultConfig = () => ({
   rules: {},
 });
 // One address of a job, in travel order. trH/trM is the journey from the previous address (unused on the first).
-export const emptyStop = () => ({ floor: "", lift: null, trH: "", trM: "" });
+// Loading distance between the truck's parking spot and the building entrance, per address.
+// Stored by key; the list order is the step used by the time model (0 = at the door … 4 = very far).
+export const WALK = [
+  { key: "door", label: "Közvetlenül a bejáratnál", range: "0–5 méter" },
+  { key: "near", label: "Közel", range: "6–20 méter" },
+  { key: "mid", label: "Közepes távolság", range: "21–50 méter" },
+  { key: "far", label: "Messze", range: "51–99 méter" },
+  { key: "vfar", label: "Nagyon messze", range: "100 méter vagy több" },
+];
+export const walkOf = (k) => WALK.find((w) => w.key === k) || null;
+export const walkText = (k) => {
+  const w = walkOf(k);
+  return w ? w.label + " (" + w.range + ")" : null;
+};
+// Sum of the distance steps over all addresses; unknown as soon as one address is unknown.
+export const walkSteps = (j) => {
+  let sum = 0;
+  for (const st of stopsOf(j)) {
+    const i = WALK.findIndex((w) => w.key === st.walk);
+    if (i < 0) return null;
+    sum += i;
+  }
+  return sum;
+};
+export const emptyStop = () => ({ floor: "", lift: null, walk: null, trH: "", trM: "" });
 export const emptyJob = () => ({
   source: "new",
   date: ymd(new Date()),
@@ -202,6 +226,7 @@ export function normJob(f, c) {
   const stops = src.map((st, i) => ({
     floor: st.floor ?? "",
     lift: tri(st.lift),
+    walk: walkOf(st.walk) ? st.walk : null,
     travelMin: i === 0 ? null : hm(st.trH, st.trM, src.length === 2 ? "Át-út ideje" : "Át-út (Cím " + i + " → Cím " + (i + 1) + ")"),
   }));
   // Total travel is only known when every journey between consecutive addresses is known.
@@ -245,6 +270,7 @@ export function timeDefs(fields, c) {
       yes: "lift nélküli",
       get: noLiftAny,
     },
+    { key: "walk", label: "Rakodási távolság (teherautó – bejárat)", unit: "fokozat", per: 1, kind: "num", get: walkSteps },
     { key: "boxes", label: "Dobozok és zsákok (becsült)", unit: "doboz", per: 10, kind: "num", get: boxEst },
     { key: "smallF", label: "Kis bútor", unit: "db", per: 1, kind: "num", get: (j) => (has(j.smallF) ? num(j.smallF) : null) },
     { key: "largeF", label: "Nagy bútor", unit: "db", per: 1, kind: "num", get: (j) => (has(j.largeF) ? num(j.largeF) : null) },
@@ -418,7 +444,12 @@ export function moveToRow(m) {
     to_floor: nn(m.toFloor),
     to_lift: lb(m.toLift),
     stops: Array.isArray(m.stops)
-      ? m.stops.map((st) => ({ floor: nn(st.floor), lift: lb(st.lift), travel_min: has(st.travelMin) ? num(st.travelMin) : null }))
+      ? m.stops.map((st) => ({
+          floor: nn(st.floor),
+          lift: lb(st.lift),
+          walk: walkOf(st.walk) ? st.walk : null,
+          travel_min: has(st.travelMin) ? num(st.travelMin) : null,
+        }))
       : null,
     boxes: nn(m.boxes),
     furniture: nn(m.furniture),
@@ -459,7 +490,12 @@ export function rowToMove(r) {
     toLift: lb(r.to_lift),
     stops:
       Array.isArray(r.stops) && r.stops.length >= 2
-        ? r.stops.map((st) => ({ floor: s(st.floor), lift: lb(st.lift), travelMin: st.travel_min ?? null }))
+        ? r.stops.map((st) => ({
+            floor: s(st.floor),
+            lift: lb(st.lift),
+            walk: walkOf(st.walk) ? st.walk : null,
+            travelMin: st.travel_min ?? null,
+          }))
         : null,
     boxes: s(r.boxes),
     furniture: s(r.furniture),
@@ -664,7 +700,7 @@ const fieldCols = (fields) =>
   ]);
 const asCols = (cols) => cols.map(([h, key, w, t, list]) => ({ h, key, w, t, list }));
 // Keys that describe one address rather than the whole job.
-export const STOP_KEYS = ["seq", "floor", "lift", "trH", "trM"];
+export const STOP_KEYS = ["seq", "floor", "lift", "walk", "trH", "trM"];
 export function templateCols(c, fields) {
   return asCols(
     [
@@ -672,6 +708,7 @@ export function templateCols(c, fields) {
       ["Cím sorszáma", "seq", 14, "int"],
       ["Emelet", "floor", 10, "int"],
       ["Lift", "lift", 14, "yn", YN],
+      ["Teherautó és bejárat közötti rakodási távolság", "walk", 44, "walk", WALK.map((w) => walkText(w.key))],
       ["Át-út az előző címtől (óra)", "trH", 24, "int"],
       ["Át-út az előző címtől (perc)", "trM", 24, "int"],
     ]
@@ -737,6 +774,14 @@ function parseCell(col, raw, c, errs) {
         val = p ? p.id : (errs.push("Ismeretlen csomag: „" + str + "” – csak a négy Move-ON csomag választható"), "");
       }
       break;
+    case "walk": {
+      // Accepts the full template label or just the category name.
+      const w = !n ? null : WALK.find((w) => nrm(walkText(w.key)) === n) || WALK.find((w) => nrm(w.label) === n);
+      if (n && !w)
+        errs.push(col.h + ": „" + str + "” – válassz a listából (" + WALK.map((w) => w.label).join(" / ") + "), vagy hagyd üresen");
+      val = w ? w.key : null;
+      break;
+    }
     case "yn":
       val =
         !n || ["nincsadat", "nemtudom", "ismeretlen", "na", "nincsinfo"].includes(n)
@@ -879,7 +924,7 @@ export function parseRows(aoa, c, fields) {
       .reverse()
       .forEach((x) => Object.assign(cf, x.cf));
     f.cf = cf;
-    f.stops = list.map((x) => ({ floor: x.v.floor, lift: x.v.lift, trH: x.v.trH, trM: x.v.trM }));
+    f.stops = list.map((x) => ({ floor: x.v.floor, lift: x.v.lift, walk: x.v.walk, trH: x.v.trH, trM: x.v.trM }));
     if (filled(f.stops[0].trH) || filled(f.stops[0].trM)) {
       errs.push("Az 1. címnél nem lehet át-út: az át-út mindig az előző címtől számít");
       f.stops[0].trH = f.stops[0].trM = "";

@@ -18,6 +18,8 @@ import {
   LOC,
   emptyJob,
   emptyStop,
+  WALK,
+  walkText,
   stopsOf,
   STOP_KEYS,
   seg,
@@ -308,7 +310,7 @@ export default class App extends Component {
           "2. Az egy költözéshez tartozó sorokba ugyanazt a „Munka sorszáma” értéket írd (1, 2, 3…). A „Cím sorszáma” a címek tényleges sorrendje: 1, 2, 3… Bármennyi cím megadható.",
         ],
         [
-          "3. Minden címnek saját Emelet és Lift adata van. Az „Át-út az előző címtől” az előző címtől idáig tartó út ideje; az 1. címnél hagyd üresen. Az át-utak összegét a rendszer számolja.",
+          "3. Minden címnek saját Emelet, Lift és „Teherautó és bejárat közötti rakodási távolság” adata van (ez utóbbi a listából választható; ha nem tudod, hagyd üresen). Az „Át-út az előző címtől” az előző címtől idáig tartó út ideje; az 1. címnél hagyd üresen. Az át-utak összegét a rendszer számolja.",
         ],
         [
           "4. A munka többi adatát (dátum, csomag, dobozok, bútorok, teljes eltelt idő stb.) csak egyszer, a munka 1. címének sorába írd. A legfontosabb: Csomag, Teljes eltelt idő (óra + perc) és minden át-út ideje.",
@@ -395,7 +397,7 @@ export default class App extends Component {
       // One sheet row per address; the job-level columns go in the first address's row.
       return stopsOf(m).map((st, i) => {
         const [rh, rm] = i === 0 ? ["", ""] : splitMin(st.travelMin),
-          A = { job: n + 1, seq: i + 1, floor: st.floor, lift: tri(st.lift), trH: rh, trM: rm };
+          A = { job: n + 1, seq: i + 1, floor: st.floor, lift: tri(st.lift), walk: st.walk, trH: rh, trM: rm };
         return cols.map((col) => {
           const k = col.key,
             own = k === "job" || STOP_KEYS.includes(k);
@@ -414,6 +416,8 @@ export default class App extends Component {
             }
             case "yn":
               return yn(v);
+            case "walk":
+              return walkText(v) || "";
             case "num":
             case "int":
               return has(v) ? num(v) : "";
@@ -577,6 +581,8 @@ export default class App extends Component {
         isArea: false,
         isDual: false,
         isTimeSel: false,
+        isSelect: false,
+        selOpts: [],
         aOpts: [],
         bOpts: [],
         hasHint: false,
@@ -688,7 +694,7 @@ export default class App extends Component {
         ["Csomag és munka", "A csomag óradíja egyben a kiállási díj is (0. óra)."],
         [
           "Indulás és érkezés",
-          "Emelet és lift címenként, az útvonal sorrendjében. Amit nem tudtok, hagyjátok „Nincs adat”-on – nem számít „nincs”-nek.",
+          "Emelet, lift és rakodási távolság címenként, az útvonal sorrendjében. Amit nem tudtok, hagyjátok „Nincs adat”-on – nem számít „nincs”-nek.",
         ],
         ["Mennyiség és egyéb", "Amennyit tudtok – az üres mező „nincs adat”, nem nulla."],
         ["Végösszeg és ellenőrzés", "A teljes eltelt időből számoljuk a végösszeget, az át-út nélküli időből tanul az elemzés."],
@@ -709,6 +715,16 @@ export default class App extends Component {
               : {},
           ),
           sg("Cím " + (i + 1) + " – lift", lift, tri(x.lift), (v) => this.set("stop." + i + ".lift", v)),
+          Object.assign({}, B, {
+            label: "Cím " + (i + 1) + " – teherautó és bejárat közötti rakodási távolság",
+            isSelect: true,
+            value: x.walk || "",
+            onChange: (e) => this.set("stop." + i + ".walk", e.target.value || null),
+            selOpts: [{ value: "", label: "Nincs adat" }].concat(WALK.map((w) => ({ value: w.key, label: walkText(w.key) }))),
+            span: "1 / -1",
+            hasHint: true,
+            hint: "A teherautó tényleges parkolási helyétől az épület bejáratáig.",
+          }),
         ]),
         [
           dual("Dobozok és zsákok becsült száma", "boxMin", "boxMax", {
@@ -795,7 +811,11 @@ export default class App extends Component {
         ln = (fl, li) =>
           (has(fl) ? (num(fl) === 0 ? "földszint" : fq(num(fl)) + ". emelet") : "emelet: nincs adat") +
           " · " +
-          (li === true ? "van lift" : li === false ? "nincs lift" : "lift: nincs adat");
+          (li === true ? "van lift" : li === false ? "nincs lift" : "lift: nincs adat"),
+        lnw = (x) =>
+          has(x.floor) || x.lift != null || x.walk
+            ? ln(x.floor, x.lift) + " · " + "rakodási táv: " + (walkText(x.walk) || "nincs adat")
+            : dash;
       const it = (label, value) => ({ label, value, color: value === dash ? "#9AA0A8" : "#18212F" });
       const lm = learnMissing(N.m),
         pkgName = pkg ? pkg.name : f.pkg === "other" ? "Egyedi" + (f.pkgOther ? ": " + f.pkgOther : "") : dash;
@@ -924,7 +944,7 @@ export default class App extends Component {
           {
             title: "Indulás és érkezés",
             onEdit: () => this.goStep(2),
-            items: stops.map((x, i) => it("Cím " + (i + 1), has(x.floor) || x.lift != null ? ln(x.floor, x.lift) : dash)),
+            items: stops.map((x, i) => it("Cím " + (i + 1), lnw(x))),
           },
           {
             title: "Mennyiség és egyéb",
@@ -1016,7 +1036,7 @@ export default class App extends Component {
                 totM: tm,
                 stops: stopsOf(j).map((x, i) => {
                   const [rh, rm] = i === 0 ? ["", ""] : splitMin(x.travelMin);
-                  return { floor: x.floor ?? "", lift: tri(x.lift), trH: rh, trM: rm };
+                  return { floor: x.floor ?? "", lift: tri(x.lift), walk: x.walk || null, trH: rh, trM: rm };
                 }),
               });
               if (!has(e.boxMin) && !has(e.boxMax) && has(j.boxes)) {
@@ -1094,6 +1114,9 @@ export default class App extends Component {
             ? (r.d.kind === "bool"
                 ? r.na + " " + r.d.yes + " és " + r.nb + " másik munka tényleges munkaidejének különbsége, " + how + "."
                 : r.n + " munka alapján, " + how + ". Csak a munkavégzési idő számít, az át-út nélkül.") +
+              (r.d.key === "walk"
+                ? " Címenként fokozat: 0 = közvetlenül a bejáratnál, 1 = közel, 2 = közepes távolság, 3 = messze, 4 = nagyon messze; a címek fokozatait összeadjuk."
+                : "") +
               (r.d.key === "boxes"
                 ? " A dobozszám a megadott tartomány közepe" +
                   (r.ranged ? "; " + r.ranged + " munkánál csak becsült tartomány ismert" : "") +

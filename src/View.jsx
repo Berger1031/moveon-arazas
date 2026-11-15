@@ -762,6 +762,33 @@ export default function View({ v }) {
                                   </div>
                                 </>
                               )}
+                              {f.isSelect && (
+                                <select
+                                  className="fx-focus"
+                                  value={f.value}
+                                  onChange={f.onChange}
+                                  aria-label={f.label}
+                                  style={{
+                                    width: "100%",
+                                    maxWidth: "440px",
+                                    height: "46px",
+                                    border: "1px solid #D9D6CF",
+                                    borderRadius: "10px",
+                                    padding: "0 12px",
+                                    fontSize: "15px",
+                                    color: "#18212F",
+                                    background: "#FFFFFF",
+                                    cursor: "pointer",
+                                    outline: "none",
+                                  }}
+                                >
+                                  {f.selOpts.map((o, i) => (
+                                    <option key={i} value={o.value}>
+                                      {o.label}
+                                    </option>
+                                  ))}
+                                </select>
+                              )}
                               {f.isTimeSel && (
                                 <>
                                   <div style={{ display: "flex", alignItems: "center", gap: "8px", maxWidth: "440px" }}>
