@@ -515,7 +515,9 @@ export default class App extends Component {
       f = S.f,
       pg = S.page,
       go = (p) => {
-        this.setState({ page: p });
+        // The "Munkák rögzítése" tab also leaves an edit in progress and starts a fresh job form.
+        if (p === "jobs" && S.editId) this.setState({ page: p, f: emptyJob(), editId: null, step: 0, dateAuto: true });
+        else this.setState({ page: p });
         try {
           window.scrollTo(0, 0);
         } catch (e) {}
